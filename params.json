@@ -1,0 +1,6 @@
+{
+  "name": "Openstack",
+  "tagline": "openstack document",
+  "body": "                                       openstack-mitaka部署\r\n环境：centos7 部署方式：packstack\r\n\r\n参考rdo文档 https://www.rdoproject.org/install/quickstart/\r\n\r\n1.安装yum源 yum install -y centos-release-openstack-mitaka\r\n\r\n2.更新系统 yum update -y\r\n\r\n3.安装packstack工具 yum install -y openstack-packstack\r\n\r\n4.生成answer-file packstack --gen-answer-file=answer-file.txt\r\n\r\n5.根据自己的环境修改answer-file.txt中配置\r\n\r\n6.用packstack根据answer-file部署openstack packstack --answer-file=answer-file.txt\r\n\r\n安装成功后根据提示登录dashboard",
+  "note": "Don't delete this file! It's used internally to help with page regeneration."
+}
