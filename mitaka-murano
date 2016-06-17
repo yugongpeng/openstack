@@ -1,0 +1,222 @@
+                                            openstack mitaka 版安装murano
+  参考链接：http://egonzalez.org/murano-in-rdo-openstack-manual-installation/
+  http://docs.openstack.org/developer/murano/draft/enduser-guide/log_into_murano_instance.html
+  http://docs.openstack.org/developer/murano/install/manual.html
+  http://docs.openstack.org/developer/murano/draft/enduser-guide/quickstart.html
+  
+  环境：centos7  openstack mitaka
+  部署方式：packstack 安装openstack，源码安装murano
+  172.24.6.171 为控制节点
+  注意：murano 依赖heat，最好在安装openstack时把heat安装好
+  
+安装流程
+
+#Let’s start installing some pre requisites
+yum install -y gcc python-setuptools python-devel git postgresql-devel libffi-devel openssl-devel
+
+#Install pip
+easy_install pip
+
+#Install tox and upgrade six
+pip install tox
+pip install --upgrade six
+
+#Create a database for murano
+mysql -u root -p
+CREATE DATABASE murano;
+
+#Create murano user at MySQL
+grant all privileges on murano.* to 'murano'@'localhost' identified by 'murano';
+grant all privileges on murano.* to 'murano'@'%' identified by 'murano';
+
+#Clone murano from mitaka/stable branch
+git clone -b stable/mitaka git://git.openstack.org/openstack/murano
+
+#Install all requirements
+cd ~/murano/
+pip install -r requirements.txt
+
+#Install murano
+python setup.py install
+
+#Create sample configuration file
+oslo-config-generator --config-file etc/oslo-config-generator/murano.conf
+
+#Create murano directory and copy the sample content on it
+mkdir /etc/murano
+cp ~/murano/etc/murano/* /etc/murano/
+
+#Rename sample configuration to murano.conf
+mv /etc/murano/murano.conf.sample /etc/murano/murano.conf
+ 
+#Edit the configuration file like this, adjust the configuration as your environment needs.
+
+vim /etc/murano/murano.conf
+
+[database]
+backend = sqlalchemy
+connection = mysql://murano:murano@172.24.6.171/murano
+
+[keystone_authtoken]
+auth_uri = http://172.24.6.171:5000/v2.0#auth_host = 127.0.0.1
+auth_host = 172.24.6.171
+auth_port = 5000
+auth_protocol = http
+identity_uri = http://172.24.6.171:35357
+admin_user = murano
+admin_password = murano
+admin_tenant_name = services
+
+[murano]
+url = http://172.24.6.171:8082
+
+[oslo_messaging_notifications]
+driver = messagingv2
+topics = notifications
+
+[oslo_messaging_rabbit]
+rabbit_host = 172.24.6.171
+rabbit_port = 5672
+rabbit_hosts = 172.24.6.171:5672
+rabbit_use_ssl = false
+rabbit_userid = guest
+rabbit_password = guest
+rabbit_virtual_host = /
+
+[rabbitmq]
+host = 172.24.6.171
+port = 5672
+login = guest
+password = guest
+virtual_host = /
+
+#Create murano user
+openstack user create --password murano murano
+
+#Add murano user to services tenant with admin privileges
+openstack role add --project services --user murano admin
+
+#Create a service for application-catalog
+openstack service create --name muranoapi --description "Murano Project" application-catalog
+
+#Associate an endpoint to application-catalog service
+openstack endpoint create --region RegionOne --publicurl 'http://172.24.6.171:8082/' --adminurl 'http://172.24.6.171:8082/' --internalurl 'http://http://172.24.6.171:8082/' MURANO_SERVICE_ID
+
+#Sync the database
+murano-db-manage --config-file /etc/murano/murano.conf upgrade
+
+#Open a new terminal and start murano-api service
+murano-api --config-file /etc/murano/murano.conf 
+
+#或者后台运行
+ nohup murano-api --config-file /etc/murano/murano.conf > murano-api.log & 
+
+
+#Import base murano package
+murano-manage --config-file /etc/murano/murano.conf import-package murano/meta/io.murano
+
+#In a new terminal, start murano-engine service
+murano-engine --config-file /etc/murano/murano.conf
+#或者后台运行
+nohup murano-engine --config-file /etc/murano/murano.conf > murano-engine.log &
+
+#Clone stable mitaka module for horizon
+git clone -b stable/mitaka git://git.openstack.org/openstack/murano-dashboard
+
+#Install base requirements
+cd ~/murano-dashboard
+pip install -r requirements.txt
+
+#Install murano-dashboard module
+python setup.py install
+
+#Enable murano-dashboard at horizon
+cp muranodashboard/local/_50_murano.py /usr/share/openstack-dashboard/openstack_dashboard/enabled/
+
+#Restart apache to apply changes
+systemctl restart httpd
+
+#Import ApacheHttpServer package
+murano --murano-repo-url="http://storage.apps.openstack.org/" package-import io.murano.apps.apache.ApacheHttpServer
+
+导入其他的包可以参考官网操作，通过web页面进行导入
+
+登录dashboard如果可以看见murano的panel则说明已经安装成功
+
+部署Apacheserver应用
+1.下载安装有murano-agent的image
+wget http://storage.apps.openstack.org/images/debian-8-m-agent.qcow2
+建议本地下载后，在后台通过命令行上传到glance
+glance image-create --name debian8-murano-agent-qcow2 --disk-format qcow2 --container-format bare --visibility public --file  debian-8-m-agent.qcow2
+2.配置网络，保证创建的虚拟机都可以上外网，因为murano安装apache 通过apt-get 安装的
+准备好外部网络和可用的float ip ,保证可以访问虚拟机的apache服务
+
+3.通过dashboard 的秘钥对功能，创建秘钥，虚拟机的ssh必须使用秘钥登录
+
+4.保证1，2,3步骤都成功后，可以创建app，（通过web创建app，有问题，采用命令行方式验证）
+vim object_model_patch.json
+cat object_model_patch.json 
+[
+    { "op": "add", 
+      "path": "/-", 
+      "value":
+        {
+            "instance": {
+                "availabilityZone": "compute172",
+                "name": "test",
+                "image": "5818a4d7-500b-4773-8915-449eb53a4ff2",
+                "keyname": "testkey",
+                "flavor": "2",
+                "assignFloatingIp": true,
+                "?": {
+                    "type": "io.murano.resources.LinuxMuranoInstance",
+                    "id": "===id1==="
+                }
+            },
+            "name": "ApacheHttpServer",
+            "enablePHP": true,
+            "?": {
+                "type": "io.murano.apps.apache.ApacheHttpServer",
+                "id": "===id2==="
+            }
+        }
+    }
+]
+其中availabilityZone,name,image,keyname,flavor根据实际环境自己指定
+
+#创建一个env ，可以通过web创建，创建时指定配置好的内部网络
+murano environment-list
++----------------------------------+------+--------+---------------------+---------------------+
+| ID                               | Name | Status | Created             | Updated             |
++----------------------------------+------+--------+---------------------+---------------------+
+| 41fae2c1e9c74f5b9acbb6ca78951225 | env  | ready  | 2016-06-16T12:05:42 | 2016-06-16T12:41:43 |
+
+
+#Create a session for temporal working on the environment
+
+murano environment-session-create ENVIRONMENT_ID
+murano environment-session-create 41fae2c1e9c74f5b9acbb6ca78951225
+Created new session:
++----------+----------------------------------+
+| Property | Value                            |
++----------+----------------------------------+
+| id       | b0f5e39a9c4c419c9ee7fdb6c92c37a6 |
++----------+----------------------------------+
+
+#Add the file with the apps configuration
+murano environment-apps-edit --session-id SESSION_ID ENVIRONMENT_ID FILE_NAME
+murano environment-apps-edit --session-id b0f5e39a9c4c419c9ee7fdb6c92c37a6 41fae2c1e9c74f5b9acbb6ca78951225 object_model_patch.json 
+
+#Deploy the environment
+murano environment-deploy ENVIRONMENT_ID --session-id SESSION_ID
+murano environment-deploy 41fae2c1e9c74f5b9acbb6ca78951225 --session-id b0f5e39a9c4c419c9ee7fdb6c92c37a
+ 
+nova list
++--------------------------------------+-----------------------------------------+--------+------------+-------------+-----------------------------------------+
+| ID                                   | Name                                    | Status | Task State | Power State | Networks                                |
++--------------------------------------+-----------------------------------------+--------+------------+-------------+-----------------------------------------+
+| c7df064d-052f-4ea7-8dd2-9ff84f32f716 | murano-csnhtipi9igg31-test-dz5yh3db3riq | ACTIVE | -          | Running     | in-network=192.168.100.12, 172.24.6.176 |
+
+ 
+  
+  
